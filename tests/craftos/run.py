@@ -1,0 +1,143 @@
+"""Run GitGet on real CraftOS-PC (the CC: Tweaked ROM), headless, against the
+real GitHub, and check every downloaded file byte for byte.
+
+The computer (live_startup.lua as its startup) runs these, anonymously:
+
+  1. gitget get octocat/Spoon-Knife                     (a whole public repo)
+  2. gitget get cc-tweaked/CC-Tweaked@<branch>:<rom>/programs/fun fun --disk
+                                                        (one folder of a big repo, onto a floppy)
+  3. gitget get octocat/Hello-World:README              (a single file)
+  4. gitget get octocat/no-such-repo-gitget-test        (not found; declines the login)
+
+Each downloaded file's git blob SHA-1 is compared with the tree GitHub lists
+for the commit GitGet reported, read with `gh api` (so it doesn't use up
+the anonymous rate limit). Private repositories need a device login that a
+person approves, so they are tested by hand (README.md, "Running the tests").
+
+    python tests/craftos/run.py
+
+Needs CraftOS-PC (set CRAFTOS_PC to CraftOS-PC_console.exe if it is not in
+C:\\Program Files\\CraftOS-PC\\), the GitHub CLI and internet access. GitGet
+makes about 25 anonymous API requests (GitHub allows 60 an hour per address).
+Work files go to the system temp folder (gitget-craftos/).
+"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+EXE = os.environ.get("CRAFTOS_PC", r"C:\Program Files\CraftOS-PC\CraftOS-PC_console.exe")
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+WORK = os.path.join(tempfile.gettempdir(), "gitget-craftos")
+ROM_FUN = "projects/core/src/main/resources/data/computercraft/lua/rom/programs/fun"
+
+
+def gh(path):
+    out = subprocess.run(["gh", "api", path], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def lua(v):
+    if isinstance(v, str):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(v, list):
+        return "{" + ", ".join(lua(x) for x in v) + "}"
+    if isinstance(v, dict):
+        return "{" + ", ".join("[" + lua(k) + "] = " + lua(x) for k, x in v.items()) + "}"
+    raise TypeError(v)
+
+
+def blob_sha(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def tree(repo, sha, path=""):
+    """{relative path: blob sha} for the blobs under path at commit sha."""
+    t = gh("repos/%s/git/trees/%s?recursive=1" % (repo, sha))
+    prefix = path + "/" if path else ""
+    return {e["path"][len(prefix):]: e["sha"] for e in t["tree"]
+            if e["type"] == "blob" and e["path"].startswith(prefix)}
+
+
+def main():
+    if not os.path.exists(EXE):
+        sys.exit("CraftOS-PC not found at %s (set CRAFTOS_PC)" % EXE)
+    cc_branch = gh("repos/cc-tweaked/CC-Tweaked")["default_branch"]
+    steps = [
+        {"args": ["get", "octocat/Spoon-Knife"]},
+        {"args": ["get", "cc-tweaked/CC-Tweaked@%s:%s" % (cc_branch, ROM_FUN), "fun", "--disk"]},
+        {"args": ["get", "octocat/Hello-World:README"]},
+        {"args": ["get", "octocat/no-such-repo-gitget-test"], "answers": ["n"]},
+    ]
+    shutil.rmtree(WORK, ignore_errors=True)
+    c0 = os.path.join(WORK, "computer", "0")
+    os.makedirs(c0)
+    os.makedirs(os.path.join(WORK, "computer", "disk", "1"))
+    shutil.copyfile(os.path.join(REPO, "programs", "gitget.lua"), os.path.join(c0, "gitget.lua"))
+    shutil.copyfile(os.path.join(HERE, "live_startup.lua"), os.path.join(c0, "startup.lua"))
+    with open(os.path.join(c0, "live_cfg.lua"), "w") as f:
+        f.write("return " + lua({"steps": steps}))
+    try:
+        subprocess.run([EXE, "--headless", "-d", WORK], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=300)
+    except subprocess.TimeoutExpired:
+        print("CraftOS-PC did not exit (timeout)")
+    log_path = os.path.join(c0, "live.log")
+    log = open(log_path, encoding="latin-1").read() if os.path.exists(log_path) else ""
+    parts = re.split(r"^=== STEP \d+\n", log, flags=re.M)[1:]
+    failures = []
+
+    def check(cond, what):
+        print(("PASS  " if cond else "FAIL  ") + what)
+        if not cond:
+            failures.append(what)
+
+    check("=== DONE" in log, "the run finished")
+    check("HARNESS ERROR" not in log, "no program crashed")
+
+    def compare(step, repo, path, local_root, single=None):
+        out = parts[step] if step < len(parts) else ""
+        m = re.search(r"from \S+@\S+ \(([0-9a-f]{7})\)", out)
+        check(m is not None and "ERROR:" not in out, "step %d downloaded (%s)" % (step + 1, repo))
+        if not m:
+            print("      " + out.strip().replace("\n", "\n      "))
+            return
+        full = gh("repos/%s/commits/%s" % (repo, m.group(1)))["sha"]
+        want = tree(repo, full, path)
+        if single:
+            want = {single: tree(repo, full, os.path.dirname(path))[os.path.basename(path)]}
+        got = {}
+        for dirpath, _, names in os.walk(local_root):
+            for n in names:
+                p = os.path.join(dirpath, n)
+                rel = os.path.relpath(p, local_root).replace("\\", "/")
+                if single and rel != single:
+                    continue
+                with open(p, "rb") as f:
+                    got[rel] = blob_sha(f.read())
+        check(got == want, "step %d: %d files match GitHub byte for byte" % (step + 1, len(want)))
+        if got != want:
+            print("      missing: %s" % sorted(set(want) - set(got)))
+            print("      extra:   %s" % sorted(set(got) - set(want)))
+            print("      differ:  %s" % sorted(k for k in want if k in got and got[k] != want[k]))
+
+    compare(0, "octocat/Spoon-Knife", "", os.path.join(c0, "Spoon-Knife"))
+    compare(1, "cc-tweaked/CC-Tweaked", ROM_FUN, os.path.join(WORK, "computer", "disk", "1", "fun"))
+    compare(2, "octocat/Hello-World", "README", c0, single="README")
+    last = parts[3] if len(parts) > 3 else ""
+    check("doesn't exist, or it is private" in last and "Nothing was downloaded" in last,
+          "step 4: a missing repo offers the login and stops when declined")
+    print("%d failed" % len(failures))
+    if failures:
+        print("Log: " + log_path)
+        sys.exit(1)
+    shutil.rmtree(WORK, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
