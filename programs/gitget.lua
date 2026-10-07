@@ -18,7 +18,7 @@ local RAW = "https://raw.githubusercontent.com"
 local LOGIN = "https://github.com/login"
 -- The GitHub App that private downloads log in through (see README.md, "Your
 -- own GitHub App"). A client ID is public; the device flow needs no secret.
-local CLIENT_ID = ""
+local CLIENT_ID = "Iv23liEghrx81amcdhOG"
 local APP_URL = "https://github.com/apps/gitget-for-computercraft"
 -- CC:Tweaked counts at least 500 bytes for every file and folder.
 local MIN_FILE = 500
@@ -166,6 +166,9 @@ local function deviceLogin(clientId)
   if not data or data.error or not data.device_code then
     if data and data.error == "device_flow_disabled" then
       stop("Device login is turned off for this GitHub App (enable it in the app's settings).")
+    end
+    if res.status and res.status >= 500 then
+      stop("GitHub's login service had a problem (HTTP " .. res.status .. "). Try again in a few minutes.")
     end
     stop("GitHub refused the login: " .. (data and tostring(data.error_description or data.error) or describe(res)))
   end

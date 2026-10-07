@@ -347,6 +347,7 @@ end
 
 function World:deviceCode(req)
   if not self.device then return reply(404, "") end
+  if self.device.codeStatus then return reply(self.device.codeStatus, "<!DOCTYPE html>") end
   if not req.body:find("client_id=" .. F.CLIENT_ID:gsub("%p", "%%%0"), 1) then
     return reply(200, J.encode({ error = "incorrect_client_credentials" }))
   end
