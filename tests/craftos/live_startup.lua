@@ -8,13 +8,9 @@ local function note(text)
   log.flush()
 end
 
-local realPrint, realWrite, realPrintError, realRead = print, write, printError, read
-_G.print = function(...)
-  local parts = {}
-  for i = 1, select("#", ...) do parts[#parts + 1] = tostring((select(i, ...))) end
-  note(table.concat(parts, "\t") .. "\n")
-  return realPrint(...)
-end
+local realWrite, realPrintError, realRead = write, printError, read
+-- The ROM's print and printError write through _G.write, so only write logs
+-- the text (printError also marks its message).
 _G.write = function(text)
   note(tostring(text))
   return realWrite(text)

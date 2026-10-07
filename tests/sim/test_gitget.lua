@@ -261,6 +261,15 @@ test("a wrong client ID is reported", function()
   contains(w:errorText(), "GitHub refused the login: incorrect_client_credentials")
 end)
 
+test("a server error from the login service says to try again later", function()
+  local w = F.new()
+  sampleRepo(w, { private = true })
+  w:deviceFlow({ "token" })
+  w.device.codeStatus = 500
+  noBug(w:run("get", "someone/sample", "--login", "--client-id", F.CLIENT_ID))
+  contains(w:errorText(), "login service had a problem (HTTP 500). Try again in a few minutes.")
+end)
+
 test("still not found after login points at installing the app", function()
   local w = F.new()
   sampleRepo(w, { private = true, appInstalled = false })

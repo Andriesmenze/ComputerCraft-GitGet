@@ -78,7 +78,8 @@ Open the page, type the code and approve. The download then starts by itself.
 ### Security notes
 
 - **No token is stored.** The token lives in the program's memory for that one download only. It is never shown, saved, or written to the settings. The next private download asks you to log in again.
-- **Limited access.** The token comes from a GitHub App with read-only access to repository contents, and only to the repositories you installed it on. It expires after 8 hours even if someone copied it.
+- **Limited access.** The token comes from a GitHub App with read-only access to repository contents. It expires after 8 hours even if someone copied it.
+- **Installing the app shares nothing.** A login acts as the person who approved it. Their token reaches only repositories that have the app installed *and* that they could already read on GitHub. Installing GitGet on your private repository doesn't let anyone else who uses GitGet see it. The app never acts without a login: it has no private key in use, and the app's owner should keep it that way.
 - **Sent only to the API.** The token goes only to `api.github.com`. Public downloads never carry one.
 - **Trust the server.** A Minecraft server makes the HTTP requests for its computers, so its operator could see the token. Only log in on servers you trust.
 - **Revoking access.** You can see and revoke GitGet's access at https://github.com/settings/apps/authorizations.

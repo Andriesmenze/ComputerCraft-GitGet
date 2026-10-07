@@ -11,10 +11,14 @@ The computer (live_startup.lua as its startup) runs these, anonymously:
 
 Each downloaded file's git blob SHA-1 is compared with the tree GitHub lists
 for the commit GitGet reported, read with `gh api` (so it doesn't use up
-the anonymous rate limit). Private repositories need a device login that a
-person approves, so they are tested by hand (README.md, "Running the tests").
+the anonymous rate limit).
+
+With --private, it instead downloads one private repository with --login and
+prints the login code as soon as GitGet shows it; a person approves it at
+https://github.com/login/device (the GitGet app must be installed on the repo):
 
     python tests/craftos/run.py
+    python tests/craftos/run.py --private owner/repo
 
 Needs CraftOS-PC (set CRAFTOS_PC to CraftOS-PC_console.exe if it is not in
 C:\\Program Files\\CraftOS-PC\\), the GitHub CLI and internet access. GitGet
@@ -29,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 EXE = os.environ.get("CRAFTOS_PC", r"C:\Program Files\CraftOS-PC\CraftOS-PC_console.exe")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -67,13 +72,20 @@ def tree(repo, sha, path=""):
 def main():
     if not os.path.exists(EXE):
         sys.exit("CraftOS-PC not found at %s (set CRAFTOS_PC)" % EXE)
-    cc_branch = gh("repos/cc-tweaked/CC-Tweaked")["default_branch"]
-    steps = [
+    private = None
+    if sys.argv[1:2] == ["--private"]:
+        if len(sys.argv) < 3:
+            sys.exit("usage: run.py --private owner/repo")
+        private = sys.argv[2]
+        steps = [{"args": ["get", private, "--login"]}]
+    else:
+        cc_branch = gh("repos/cc-tweaked/CC-Tweaked")["default_branch"]
+        steps = [
         {"args": ["get", "octocat/Spoon-Knife"]},
         {"args": ["get", "cc-tweaked/CC-Tweaked@%s:%s" % (cc_branch, ROM_FUN), "fun", "--disk"]},
         {"args": ["get", "octocat/Hello-World:README"]},
         {"args": ["get", "octocat/no-such-repo-gitget-test"], "answers": ["n"]},
-    ]
+        ]
     shutil.rmtree(WORK, ignore_errors=True)
     c0 = os.path.join(WORK, "computer", "0")
     os.makedirs(c0)
@@ -82,12 +94,20 @@ def main():
     shutil.copyfile(os.path.join(HERE, "live_startup.lua"), os.path.join(c0, "startup.lua"))
     with open(os.path.join(c0, "live_cfg.lua"), "w") as f:
         f.write("return " + lua({"steps": steps}))
-    try:
-        subprocess.run([EXE, "--headless", "-d", WORK], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=300)
-    except subprocess.TimeoutExpired:
-        print("CraftOS-PC did not exit (timeout)")
     log_path = os.path.join(c0, "live.log")
+    proc = subprocess.Popen([EXE, "--headless", "-d", WORK], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + (960 if private else 300)
+    shown = False
+    while proc.poll() is None and time.time() < deadline:
+        if private and not shown and os.path.exists(log_path):
+            m = re.search(r"^\s+([A-Z0-9]{4}-[A-Z0-9]{4})\s*$", open(log_path, encoding="latin-1").read(), re.M)
+            if m:
+                print("LOGIN CODE %s: approve it at https://github.com/login/device" % m.group(1), flush=True)
+                shown = True
+        time.sleep(1)
+    if proc.poll() is None:
+        proc.kill()
+        print("CraftOS-PC did not exit (timeout)")
     log = open(log_path, encoding="latin-1").read() if os.path.exists(log_path) else ""
     parts = re.split(r"^=== STEP \d+\n", log, flags=re.M)[1:]
     failures = []
@@ -126,6 +146,16 @@ def main():
             print("      extra:   %s" % sorted(set(got) - set(want)))
             print("      differ:  %s" % sorted(k for k in want if k in got and got[k] != want[k]))
 
+    if private:
+        out = parts[0] if parts else ""
+        check("Logged in." in out, "the device login succeeded")
+        compare(0, private, "", os.path.join(c0, private.split("/")[1]))
+        print("%d failed" % len(failures))
+        if failures:
+            print("Log: " + log_path)
+            sys.exit(1)
+        shutil.rmtree(WORK, ignore_errors=True)
+        return
     compare(0, "octocat/Spoon-Knife", "", os.path.join(c0, "Spoon-Knife"))
     compare(1, "cc-tweaked/CC-Tweaked", ROM_FUN, os.path.join(WORK, "computer", "disk", "1", "fun"))
     compare(2, "octocat/Hello-World", "README", c0, single="README")
