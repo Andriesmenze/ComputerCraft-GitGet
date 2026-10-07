@@ -61,12 +61,18 @@ def blob_sha(data):
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
+# Characters CC:Tweaked does not allow in file names (BAD_NAME in gitget.lua).
+BAD_NAME = re.compile(r'[\x00-\x1f\x7f"*:<>?|\\]')
+
+
 def tree(repo, sha, path=""):
-    """{relative path: blob sha} for the blobs under path at commit sha."""
+    """{relative path: blob sha} for the files under path at commit sha that GitGet
+    downloads: blobs, without symbolic links (mode 120000) or names CC can't save."""
     t = gh("repos/%s/git/trees/%s?recursive=1" % (repo, sha))
     prefix = path + "/" if path else ""
     return {e["path"][len(prefix):]: e["sha"] for e in t["tree"]
-            if e["type"] == "blob" and e["path"].startswith(prefix)}
+            if e["type"] == "blob" and e["mode"] != "120000" and e["path"].startswith(prefix)
+            and not BAD_NAME.search(e["path"][len(prefix):])}
 
 
 def main():
