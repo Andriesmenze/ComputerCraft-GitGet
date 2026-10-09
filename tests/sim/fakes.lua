@@ -463,7 +463,8 @@ function World:env(args)
     colours = { white = 1, yellow = 16, lightBlue = 8, lime = 32 },
     fs = self:makeFs(),
     http = not self.httpOff and self:makeHttp() or nil,
-    textutils = { unserialiseJSON = J.decode, unserializeJSON = J.decode, serialiseJSON = J.encode },
+    textutils = { unserialiseJSON = J.decode, unserializeJSON = J.decode, serialiseJSON = J.encode,
+      pagedPrint = function(text) print(text) end },
     os = {
       sleep = function(n) w.sleeps[#w.sleeps + 1] = n end,
       epoch = function() return w.epoch end,

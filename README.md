@@ -26,7 +26,8 @@ To update GitGet later, run `gitget update` (`wget` refuses to overwrite a file)
 ## Usage
 
 ```
-gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--force] [--client-id <id>]
+gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--save] [--force]
+           [--all] [--skip <names>] [--client-id <id>]
 gitget login [--save] [--client-id <id>]
 gitget logout
 gitget update
@@ -43,11 +44,16 @@ gitget help
 | `gitget get owner/repo --disk` | Onto a floppy disk (asks which one when there are several) |
 | `gitget get owner/private-repo` | Asks whether to log in when GitHub can't find the repository |
 | `gitget get owner/private-repo --login` | Logs in first |
+| `gitget get owner/private-repo --save` | Logs in first and saves the login, so it survives a restart (see [Saving the login](#saving-the-login)) |
+| `gitget get owner/repo --all` | Everything, including tests, docs and dot files |
+| `gitget get owner/repo --skip *.md,img` | Also leaves out Markdown files and `img` folders |
 
 A `https://github.com/owner/repo` URL works in place of `owner/repo`.
 
 - **Target:** the default is the repository's name, or the last part of the `:path`, in the current folder. With `--disk` the target is on the disk.
 - **Existing files:** if the target folder isn't empty, GitGet asks before going on (`--force` skips the question). Files with the same name are replaced, and other files in the folder are left alone.
+- **Left out by default:** files and folders named `test`, `tests`, `spec`, `specs`, `doc` or `docs` (any case, at any depth), and everything whose name starts with a dot (`.github`, `.gitignore`, `.vscode`, ...). They are rarely needed on a computer and take space: every file costs at least 500 bytes. GitGet says how many files it left out; `--all` gets them too. A `:path` that names such a folder or file downloads it anyway (`owner/repo:docs`), but leaves out what lies below it as usual.
+- **`--skip <names>`:** leaves out more, on top of the above (also with `--all`). Separate names with commas, or give `--skip` more than once. A name without `/` matches a file or folder of that name anywhere; a name with `/` matches that path from the top of the download (`--skip assets/big`). `*` stands for any characters except `/` (`--skip *.md`), and case is ignored.
 - **Skipped entries:** symbolic links, submodules and files whose names CC can't save (with `"*:<>?|\` in them) are skipped, and GitGet tells you about them.
 
 ## Private repositories: logging in
@@ -81,7 +87,37 @@ GitGet keeps the login in the computer's memory until the computer shuts down or
 
 **Only do this on a single-player world or on a server whose operators you trust.**
 
-`gitget login --save` also saves the login to `/.gitget_login`, so it survives restarts until the token expires (8 hours at most). GitGet warns you and asks for a passphrase of at least 8 characters, twice. After a restart, the next private download asks for that passphrase instead of a new login (press Enter to log in instead). Three wrong passphrases also fall back to a new login.
+A saved login survives restarts until the token expires (8 hours at most), locked with a passphrase you choose. There are two ways to save one:
+
+- `gitget login --save`: logs in (or uses the login you already have) and saves it.
+- `gitget get owner/private-repo --save`: the same, then downloads.
+
+It goes like this:
+
+```
+> gitget login --save
+You are logged in for the next 7 hours.
+
+Only save your login on a single-player world or on a server whose operators you trust.
+...
+Save the login for the next 7 hours? (y/n) y
+Passphrase (at least 8 characters): ********
+Type it again: ********
+Encrypting...
+Saved to /.gitget_login for the next 7 hours. gitget logout deletes it.
+```
+
+After a restart, the next private download asks for the passphrase instead of a new login:
+
+```
+> gitget get you/secret
+Looking up you/secret...
+Passphrase of your saved GitHub login (Enter to skip): ********
+Unlocking...
+Using your saved login (gitget logout deletes it).
+```
+
+Press Enter to log in anew instead. Three wrong passphrases also fall back to a new login. When the token expires, GitGet deletes the file and you log in (and save) again.
 
 - The token is encrypted with xEncrypt (ChaCha20 and HMAC-SHA256, from [ComputerCraft-XEncrypt](https://github.com/Andriesmenze/ComputerCraft-XEncrypt), bundled in `gitget.lua`). The key comes from your passphrase through PBKDF2 with 2000 rounds and a random salt. The app's client ID and the expiry time are authenticated with it, so changing either one makes the file unusable.
 - **The passphrase is the only protection.** Whoever can copy the file can try passphrases on a fast PC, without limits and without you noticing. That includes the server's operators (the file is in the world save), anyone with access to the server's files, and every program on that computer. 2000 rounds is far below what real password storage uses, because CC's Lua is slow. Use a long passphrase that you use nowhere else.
@@ -157,7 +193,9 @@ python tests/sim/run.py
 python tests/sync_xencrypt.py
 ```
 
-The live suite runs GitGet on [CraftOS-PC](https://www.craftos-pc.cc) against the real GitHub. It downloads a whole public repository, one folder of CC: Tweaked onto a floppy, and a single file, then compares every file with GitHub's own blob IDs. It also saves a dummy login with `gitget login --save`, then unlocks it after a simulated restart (a wrong passphrase first). GitHub rejects the dummy token, so the file must be deleted, and it times the passphrase steps. It needs CraftOS-PC, the GitHub CLI (`gh`, logged in) and internet access:
+The live suite runs GitGet on [CraftOS-PC](https://www.craftos-pc.cc) against the real GitHub. It downloads a whole public repository, one folder of CC: Tweaked onto a floppy, a single file, and this repository (whose tests and dot files must be left out), then compares every file with GitHub's own blob IDs. It also saves a dummy login with `gitget login --save`, then unlocks it after a simulated restart (a wrong passphrase first). GitHub rejects the dummy token, so the file must be deleted, and it times the passphrase steps. It needs CraftOS-PC, the GitHub CLI (`gh`, logged in) and internet access.
+
+A run makes about 15 anonymous API requests, out of the 60 an hour GitHub allows per IP address. Before it starts, the runner checks how many are left; when fewer than 20 are, it waits for the limit to reset instead of failing part-way (`--no-wait` stops with a message instead):
 
 ```
 python tests/craftos/run.py

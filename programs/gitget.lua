@@ -2,10 +2,12 @@
 -- computer or a floppy disk. Public repositories need nothing. Private ones use
 -- a GitHub device login. The token stays in the computer's memory until it
 -- restarts, so later downloads need no new login. `gitget login --save` also
--- saves it, encrypted with a passphrase, until it expires.
+-- saves it, encrypted with a passphrase, until it expires. Tests, docs and
+-- dot files are left out unless --all is given.
 --
 -- Usage:
---   gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--force] [--client-id <id>]
+--   gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--save]
+--              [--force] [--all] [--skip <names>] [--client-id <id>]
 --   gitget login [--save] [--client-id <id>]
 --   gitget logout
 --   gitget update
@@ -13,7 +15,7 @@
 --
 -- https://github.com/Andriesmenze/ComputerCraft-GitGet
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 local SELF_URL = "https://raw.githubusercontent.com/Andriesmenze/ComputerCraft-GitGet/main/programs/gitget.lua"
 local SELF_MARK = "-- GitGet: "
 local API = "https://api.github.com"
@@ -28,19 +30,29 @@ local MIN_FILE = 500
 -- Loads the bundled xEncrypt (defined at the end of this file).
 local loadXEncrypt
 
+-- Left out of a download unless --all is given (see skipRules).
+local DEFAULT_SKIP = { "test", "tests", "spec", "specs", "doc", "docs", ".*" }
+
 local function usage()
-  print("Usage:")
-  print("  gitget get <owner>/<repo>[@ref][:path] [target]")
-  print("      [--disk] [--login] [--force] [--client-id <id>]")
-  print("  gitget login [--save] [--client-id <id>]")
-  print("  gitget logout")
-  print("  gitget update")
-  print("")
-  print("--disk   save to a floppy disk")
-  print("--login  log in to GitHub first (private repos)")
-  print("--force  overwrite without asking")
-  print("--save   also save the login to a file, encrypted")
-  print("Example: gitget get octocat/Spoon-Knife")
+  textutils.pagedPrint(table.concat({
+    "Usage:",
+    "  gitget get <owner>/<repo>[@ref][:path] [target]",
+    "    [--disk] [--login] [--save] [--force]",
+    "    [--all] [--skip <names>] [--client-id <id>]",
+    "  gitget login [--save]",
+    "  gitget logout",
+    "  gitget update",
+    "",
+    "--disk   save to a floppy disk",
+    "--login  log in to GitHub first (private repos)",
+    "--save   log in, and keep the login after a",
+    "         restart, locked with a passphrase",
+    "--force  overwrite without asking",
+    "--all    also get tests, docs and dot files",
+    "--skip   also leave these out: --skip *.md,img",
+    "",
+    "Example: gitget get octocat/Spoon-Knife",
+  }, "\n"))
 end
 
 -- An expected problem: main shows its message, without a stack trace.
@@ -315,10 +327,42 @@ local function safePath(rel)
   return true
 end
 
+-- Turns names into rules for skippedBy. A name without "/" matches a file or
+-- folder of that name anywhere; a name with "/" matches that path from the top
+-- of the download. "*" stands for any characters but "/", and case is ignored.
+local function skipRules(names, default)
+  local rules = {}
+  for _, name in ipairs(names) do
+    name = name:gsub("^/+", ""):gsub("/+$", "")
+    if name ~= "" then
+      local pattern = name:lower():gsub("[%^%$%(%)%%%.%[%]%+%-%?]", "%%%0"):gsub("%*", "[^/]*")
+      rules[#rules + 1] = { pattern = "^" .. pattern .. "$", path = name:find("/", 1, true) ~= nil, default = default }
+    end
+  end
+  return rules
+end
+
+-- The part of rel that a rule leaves out, and that rule; nil when none does.
+local function skippedBy(rel, rules)
+  local parts = {}
+  for part in rel:gmatch("[^/]+") do parts[#parts + 1] = part end
+  for _, rule in ipairs(rules) do
+    local prefix
+    for n, part in ipairs(parts) do
+      prefix = n == 1 and part or (prefix .. "/" .. part)
+      local name = rule.path and prefix or part
+      if name:lower():find(rule.pattern) then return name, rule end
+    end
+  end
+  return nil
+end
+
 -- Picks the files to download: everything under spec.path, with that prefix
--- removed. A path that names a single file selects just that file.
-local function selectFiles(spec, tree)
-  local files, skipped = {}, { links = 0, submodules = 0, names = {} }
+-- removed, except what the rules leave out. A path that names a single file
+-- selects just that file, whatever the rules say.
+local function selectFiles(spec, tree, rules)
+  local files = {}
+  local skipped = { links = 0, submodules = 0, names = {}, left = 0, leftNames = {}, leftSeen = {} }
   local prefix = spec.path
   local single = false
   for _, entry in ipairs(tree) do
@@ -342,7 +386,16 @@ local function selectFiles(spec, tree)
         if not safePath(rel) then
           stop("The repository has a file with an unsafe path (" .. entry.path .. "); nothing was downloaded.")
         end
-        if rel:find(BAD_NAME) then
+        local left, rule
+        if prefix == "" or entry.path ~= prefix then left, rule = skippedBy(rel, rules) end
+        if left then
+          skipped.left = skipped.left + 1
+          skipped.leftDefault = skipped.leftDefault or rule.default
+          if not skipped.leftSeen[left] then
+            skipped.leftSeen[left] = true
+            skipped.leftNames[#skipped.leftNames + 1] = left
+          end
+        elseif rel:find(BAD_NAME) then
           skipped.names[#skipped.names + 1] = entry.path
         else
           files[#files + 1] = { path = entry.path, rel = rel, sha = entry.sha, size = tonumber(entry.size) or 0 }
@@ -573,7 +626,7 @@ end
 local function freshLogin(clientId)
   local token, expiresIn = deviceLogin(clientId)
   keep(clientId, token, os.epoch("utc") + (expiresIn - MARGIN) * 1000)
-  print("GitGet keeps this login until the computer restarts (gitget logout forgets it).")
+  print("GitGet keeps this login until the computer restarts (gitget logout forgets it). To keep it after a restart too: gitget login --save")
   return token
 end
 
@@ -626,13 +679,20 @@ end
 
 local function get(args)
   local specText, targetArg
-  local useDisk, login, force, clientId = false, false, false, CLIENT_ID
+  local useDisk, login, save, force, all, clientId = false, false, false, false, false, CLIENT_ID
+  local skipNames = {}
   local i = 2
   while i <= #args do
     local a = args[i]
     if a == "--disk" then useDisk = true
     elseif a == "--login" then login = true
+    elseif a == "--save" then login, save = true, true
     elseif a == "--force" then force = true
+    elseif a == "--all" then all = true
+    elseif a == "--skip" then
+      i = i + 1
+      if not args[i] or args[i]:gsub("[%s,/]", "") == "" then stop("--skip needs names, such as --skip docs,*.md") end
+      for name in args[i]:gmatch("[^,]+") do skipNames[#skipNames + 1] = name:match("^%s*(.-)%s*$") end
     elseif a == "--client-id" then
       i = i + 1
       clientId = args[i]
@@ -653,8 +713,14 @@ local function get(args)
   end
   local name = spec.owner .. "/" .. spec.repo
 
+  local rules = skipRules(skipNames, false)
+  if not all then
+    for _, rule in ipairs(skipRules(DEFAULT_SKIP, true)) do rules[#rules + 1] = rule end
+  end
+
   local token
   if login then token = remembered(clientId) or freshLogin(clientId) end
+  if save then saveLogin(clientId) end
   print("Looking up " .. name .. "...")
   local info, res, step = fetchRepo(spec, token)
   if not info and step == "repo" and res.status == 404 and not token then
@@ -691,8 +757,13 @@ local function get(args)
     stop(name .. " is too big for GitHub to list in one go. Download one folder at a time with " .. name .. ":<folder>.")
   end
 
-  local files, skipped, single = selectFiles(spec, info.tree)
+  local files, skipped, single = selectFiles(spec, info.tree, rules)
+  local leftOut = table.concat(skipped.leftNames, ", ", 1, math.min(3, #skipped.leftNames))
+    .. (#skipped.leftNames > 3 and ", ..." or "")
   if #files == 0 then
+    if skipped.left > 0 then
+      stop("Every file of " .. name .. " is left out (" .. leftOut .. ")." .. (skipped.leftDefault and " Use --all to get them." or ""))
+    end
     if spec.path ~= "" then stop(name .. " has no file or folder called " .. spec.path .. " at " .. info.ref .. ".") end
     stop(name .. " has no files to download.")
   end
@@ -760,6 +831,9 @@ local function get(args)
   local where = single and ("/" .. fs.combine(target, files[1].rel)) or ("/" .. target)
   colourPrint(colours.lime, "Downloaded " .. #files .. (#files == 1 and " file" or " files") .. " (" .. kb(total) .. ") to " .. where)
   print("from " .. name .. "@" .. info.ref .. " (" .. info.sha:sub(1, 7) .. ")")
+  if skipped.left > 0 then
+    print("Left out " .. skipped.left .. " file(s): " .. leftOut .. (skipped.leftDefault and "; --all gets them." or "."))
+  end
   if skipped.links > 0 then print("Skipped " .. skipped.links .. " symbolic link(s).") end
   if skipped.submodules > 0 then print("Skipped " .. skipped.submodules .. " submodule(s); get those with gitget too.") end
   if #skipped.names > 0 then

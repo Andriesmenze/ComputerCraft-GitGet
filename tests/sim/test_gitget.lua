@@ -144,6 +144,77 @@ test("skips symbolic links, submodules and names CC can't save", function()
   contains(text, "names CC can't save, such as what?.txt")
 end)
 
+local CLUTTER = {
+  ["tests/run.lua"] = "t", ["Docs/guide.md"] = "d", ["apis/test/unit.lua"] = "u",
+  [".github/workflows/ci.yml"] = "c", [".gitignore"] = "g", ["spec/x.lua"] = "s",
+  ["apis/latest.lua"] = "kept: contains test but is not named test",
+  ["README.md"] = "r", ["apis/util.lua"] = "u",
+}
+
+test("tests, docs and dot files are left out unless --all is given", function()
+  local w = F.new()
+  sampleRepo(w, { files = CLUTTER })
+  local text = noBug(w:run("get", "someone/sample"))
+  ok(w.files["sample/apis/util.lua"] and w.files["sample/README.md"], "the program files")
+  ok(w.files["sample/apis/latest.lua"], "a name that only contains test")
+  for path in pairs(CLUTTER) do
+    if path ~= "apis/latest.lua" and path ~= "README.md" and path ~= "apis/util.lua" then ok(not w.files["sample/" .. path], "left out: " .. path) end
+  end
+  ok(not w.dirs["sample/tests"] and not w.dirs["sample/.github"], "no empty folders")
+  contains(text, "Downloaded 3 files")
+  contains(text, "Left out 6 file(s): ")
+  contains(text, "--all gets them")
+
+  w = F.new()
+  sampleRepo(w, { files = CLUTTER })
+  text = noBug(w:run("get", "someone/sample", "--all"))
+  for path in pairs(CLUTTER) do ok(w.files["sample/" .. path], "--all: " .. path) end
+  notContains(text, "Left out")
+end)
+
+test("a :path or file inside a left-out folder is still downloaded", function()
+  local w = F.new()
+  sampleRepo(w, { files = CLUTTER })
+  noBug(w:run("get", "someone/sample:tests"))
+  eq(w.files["tests/run.lua"], "t", "the folder asked for")
+  noBug(w:run("get", "someone/sample:.github/workflows/ci.yml"))
+  eq(w.files["ci.yml"], "c", "the file asked for")
+  noBug(w:run("get", "someone/sample:apis"))
+  ok(w.files["apis/util.lua"] and not w.files["apis/test/unit.lua"], "still left out below the path")
+end)
+
+test("--skip leaves out more names, folders and paths", function()
+  local w = F.new()
+  sampleRepo(w, { files = { ["a/b/c.lua"] = "1", ["x/b/c.lua"] = "2", ["README.md"] = "r",
+    ["img/logo.bin"] = "i", ["apis/util.lua"] = "u" } })
+  local text = noBug(w:run("get", "someone/sample", "--skip", "*.MD, img", "--skip", "a/b"))
+  ok(not w.files["sample/README.md"], "*.md, ignoring case")
+  ok(not w.files["sample/img/logo.bin"], "a folder")
+  ok(not w.files["sample/a/b/c.lua"], "a path from the top")
+  ok(w.files["sample/x/b/c.lua"], "the same name elsewhere")
+  ok(w.files["sample/apis/util.lua"], "the rest")
+  contains(text, "Left out 3 file(s): ")
+  for _, name in ipairs({ "README.md", "img", "a/b" }) do contains(text, name) end
+  notContains(text, "--all", "the user's own names come back without --skip, not with --all")
+
+  w = F.new()
+  sampleRepo(w)
+  noBug(w:run("get", "someone/sample", "--skip"))
+  contains(w:errorText(), "--skip needs names")
+end)
+
+test("a download that leaves out every file says how to get them", function()
+  local w = F.new()
+  w:addRepo("someone/docs", { files = { ["docs/a.md"] = "a", [".nojekyll"] = "" } })
+  noBug(w:run("get", "someone/docs"))
+  contains(w:errorText(), "Every file of someone/docs is left out (")
+  contains(w:errorText(), "docs")
+  contains(w:errorText(), ".nojekyll")
+  contains(w:errorText(), "Use --all to get them.")
+  noBug(w:run("get", "someone/docs", "--all"))
+  eq(w.files["docs/docs/a.md"], "a", "--all")
+end)
+
 test("refuses a tree with an unsafe path before writing anything", function()
   local w = F.new()
   sampleRepo(w, { extraPaths = { "a/../../evil.lua" } })
@@ -514,6 +585,25 @@ test("login --save reuses a kept login", function()
   contains(text, "You are logged in for the next 7 hours")
   eq(loginRequests(w), 0, "no new login")
   ok(w.files[".gitget_login"], "saved")
+end)
+
+test("a new login says how to save it", function()
+  local w = F.new()
+  w:deviceFlow({ "token" })
+  local text = noBug(w:run("login", "--client-id", F.CLIENT_ID))
+  contains(text, "gitget login --save")
+end)
+
+test("get --save logs in, saves the login, then downloads", function()
+  local w = F.new()
+  sampleRepo(w, { private = true })
+  w:deviceFlow({ "token" })
+  w.answers = { "y", PASS, PASS }
+  local text = noBug(w:run("get", "someone/sample", "--save", "--client-id", F.CLIENT_ID))
+  contains(text, "Saved to /.gitget_login")
+  ok(w.files[".gitget_login"], "saved")
+  ok(w.files["sample/README.md"], "downloaded")
+  notContains(w.files[".gitget_login"], F.TOKEN, "token in the file")
 end)
 
 -- Disks, space and checked writes -------------------------------------------

@@ -4,7 +4,7 @@ real GitHub, and check every downloaded file byte for byte.
 The computer (live_startup.lua as its startup) runs these, anonymously:
 
   1. gitget get octocat/Spoon-Knife                     (a whole public repo)
-  2. gitget get cc-tweaked/CC-Tweaked@<branch>:<rom>/programs/fun fun --disk
+  2. gitget get cc-tweaked/CC-Tweaked@<branch>:tools --disk
                                                         (one folder of a big repo, onto a floppy)
   3. gitget get octocat/Hello-World:README              (a single file)
   4. gitget get octocat/no-such-repo-gitget-test        (not found; declines the login)
@@ -13,6 +13,8 @@ The computer (live_startup.lua as its startup) runs these, anonymously:
   6. gitget get octocat/Hello-World:README --login      (after a restart: a wrong, then the
                                                         right passphrase; GitHub rejects the
                                                         dummy token, so the file is deleted)
+  7. gitget get Andriesmenze/ComputerCraft-GitGet gg    (this repository: its tests and
+                                                        dot files are left out)
 
 Each downloaded file's git blob SHA-1 is compared with the tree GitHub lists
 for the commit GitGet reported, read with `gh api` (so it doesn't use up
@@ -27,7 +29,10 @@ https://github.com/login/device (the GitGet app must be installed on the repo):
 
 Needs CraftOS-PC (set CRAFTOS_PC to CraftOS-PC_console.exe if it is not in
 C:\\Program Files\\CraftOS-PC\\), the GitHub CLI and internet access. GitGet
-makes about 25 anonymous API requests (GitHub allows 60 an hour per address).
+makes about 15 anonymous API requests; GitHub allows 60 an hour per address,
+shared by everything on it. Before starting, the runner reads how many are left
+(that request doesn't count) and, when too few are, waits for the reset rather
+than fail half-way; --no-wait stops instead.
 Work files go to the system temp folder (gitget-craftos/).
 """
 import hashlib
@@ -39,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 EXE = os.environ.get("CRAFTOS_PC", r"C:\Program Files\CraftOS-PC\CraftOS-PC_console.exe")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,7 +52,27 @@ DUMMY_APP = "Iv1.gitgetdummy"
 PASSPHRASE = "a long test passphrase"
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 WORK = os.path.join(tempfile.gettempdir(), "gitget-craftos")
-ROM_FUN = "projects/core/src/main/resources/data/computercraft/lua/rom/programs/fun"
+# A folder near the top of a big repository: each folder level of a :path costs
+# one API request.
+CC_FOLDER = "tools"
+# Anonymous API requests a run makes (about 15), with room to spare.
+NEEDED = 20
+
+
+def wait_for_rate_limit(wait):
+    """Waits until GitHub allows NEEDED anonymous API requests from this address.
+    GET /rate_limit itself doesn't count against the limit."""
+    with urllib.request.urlopen("https://api.github.com/rate_limit", timeout=30) as r:
+        core = json.load(r)["resources"]["core"]
+    if core["remaining"] >= NEEDED:
+        return
+    minutes = max(0, int(core["reset"] - time.time())) // 60 + 1
+    if not wait:
+        sys.exit("Only %d anonymous API requests are left this hour (a run needs about %d); "
+                 "the limit resets in %d minutes." % (core["remaining"], NEEDED, minutes))
+    print("Only %d anonymous API requests are left this hour; waiting %d minutes for the reset..."
+          % (core["remaining"], minutes), flush=True)
+    time.sleep(max(0, core["reset"] - time.time()) + 15)
 
 
 def gh(path):
@@ -74,20 +100,31 @@ def blob_sha(data):
 BAD_NAME = re.compile(r'[\x00-\x1f\x7f"*:<>?|\\]')
 
 
+# Names GitGet leaves out without --all (DEFAULT_SKIP in gitget.lua).
+DEFAULT_SKIP = {"test", "tests", "spec", "specs", "doc", "docs"}
+
+
+def left_out(rel):
+    return any(p.lower() in DEFAULT_SKIP or p.startswith(".") for p in rel.split("/"))
+
+
 def tree(repo, sha, path=""):
     """{relative path: blob sha} for the files under path at commit sha that GitGet
-    downloads: blobs, without symbolic links (mode 120000) or names CC can't save."""
+    downloads: blobs, without symbolic links (mode 120000), names CC can't save,
+    or what it leaves out by default."""
     t = gh("repos/%s/git/trees/%s?recursive=1" % (repo, sha))
     prefix = path + "/" if path else ""
     return {e["path"][len(prefix):]: e["sha"] for e in t["tree"]
             if e["type"] == "blob" and e["mode"] != "120000" and e["path"].startswith(prefix)
-            and not BAD_NAME.search(e["path"][len(prefix):])}
+            and not BAD_NAME.search(e["path"][len(prefix):]) and not left_out(e["path"][len(prefix):])}
 
 
 def main():
     if not os.path.exists(EXE):
         sys.exit("CraftOS-PC not found at %s (set CRAFTOS_PC)" % EXE)
     private = None
+    wait = "--no-wait" not in sys.argv[1:]
+    sys.argv = [a for a in sys.argv if a != "--no-wait"]
     if sys.argv[1:2] == ["--private"]:
         if len(sys.argv) < 3:
             sys.exit("usage: run.py --private owner/repo")
@@ -97,14 +134,16 @@ def main():
         cc_branch = gh("repos/cc-tweaked/CC-Tweaked")["default_branch"]
         steps = [
         {"args": ["get", "octocat/Spoon-Knife"]},
-        {"args": ["get", "cc-tweaked/CC-Tweaked@%s:%s" % (cc_branch, ROM_FUN), "fun", "--disk"]},
+        {"args": ["get", "cc-tweaked/CC-Tweaked@%s:%s" % (cc_branch, CC_FOLDER), "--disk"]},
         {"args": ["get", "octocat/Hello-World:README"]},
         {"args": ["get", "octocat/no-such-repo-gitget-test"], "answers": ["n"]},
         {"args": ["login", "--save", "--client-id", DUMMY_APP], "keep": DUMMY_APP,
          "answers": ["y", PASSPHRASE, PASSPHRASE]},
         {"args": ["get", "octocat/Hello-World:README", "hw", "--login", "--client-id", DUMMY_APP],
          "forget": True, "answers": ["not the passphrase", PASSPHRASE]},
+        {"args": ["get", "Andriesmenze/ComputerCraft-GitGet", "gg"]},
         ]
+        wait_for_rate_limit(wait)
     shutil.rmtree(WORK, ignore_errors=True)
     c0 = os.path.join(WORK, "computer", "0")
     os.makedirs(c0)
@@ -177,7 +216,7 @@ def main():
         shutil.rmtree(WORK, ignore_errors=True)
         return
     compare(0, "octocat/Spoon-Knife", "", os.path.join(c0, "Spoon-Knife"))
-    compare(1, "cc-tweaked/CC-Tweaked", ROM_FUN, os.path.join(WORK, "computer", "disk", "1", "fun"))
+    compare(1, "cc-tweaked/CC-Tweaked", CC_FOLDER, os.path.join(WORK, "computer", "disk", "1", CC_FOLDER))
     compare(2, "octocat/Hello-World", "README", c0, single="README")
     last = parts[3] if len(parts) > 3 else ""
     check("doesn't exist, or it is private" in last and "Nothing was downloaded" in last,
@@ -189,6 +228,9 @@ def main():
           "step 6: a wrong passphrase fails, the right one unlocks the saved login")
     check("no longer accepts that login" in unlock and "=== SAVED false" in unlock,
           "step 6: GitHub rejects the dummy token, and the saved login is deleted")
+    compare(6, "Andriesmenze/ComputerCraft-GitGet", "", os.path.join(c0, "gg"))
+    own = parts[6] if len(parts) > 6 else ""
+    check("Left out " in own and "tests" in own and ".github" in own, "step 7: tests and dot files were left out")
     if len(took) > 5:
         # PBKDF2 does not yield: stay well under CC's 7 second limit, also in
         # game (2 to 4 times slower than CraftOS-PC)
