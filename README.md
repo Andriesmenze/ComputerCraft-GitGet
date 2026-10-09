@@ -1,6 +1,6 @@
 # GitGet
 
-Downloads a GitHub repository, or one folder or file of it, onto a [CC: Tweaked](https://tweaked.cc) (ComputerCraft) computer or a floppy disk. Public repositories need nothing. Private ones use a GitHub device login: you approve a short code on your phone or PC, and no token or password is ever typed into or stored on the computer.
+Downloads a GitHub repository, or one folder or file of it, onto a [CC: Tweaked](https://tweaked.cc) (ComputerCraft) computer or a floppy disk. Public repositories need nothing. Private ones use a GitHub device login: you approve a short code on your phone or PC, and no token or password is ever typed into the computer or saved to its disk.
 
 ## Installation
 
@@ -27,6 +27,7 @@ To update GitGet later, run `gitget update` (`wget` refuses to overwrite a file)
 
 ```
 gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--force] [--client-id <id>]
+gitget logout
 gitget update
 gitget help
 ```
@@ -73,11 +74,14 @@ Log in to GitHub
 
 Open the page, type the code and approve. The download then starts by itself.
 
+GitGet keeps the login in the computer's memory until the computer shuts down or restarts, or the token is five minutes from expiring (it lasts 8 hours). Until then, private downloads on that computer need no new login. `gitget logout` forgets it sooner.
+
 **Before your first login,** the GitGet GitHub App must be installed on the repositories you want it to read: open https://github.com/apps/gitget-for-computercraft/installations/new and choose the repositories. If it isn't installed on a repository, GitGet still can't find it after the login and shows that link.
 
 ### Security notes
 
-- **No token is stored.** The token lives in the program's memory for that one download only. It is never shown, saved, or written to the settings. The next private download asks you to log in again.
+- **No token is stored on disk.** The token is never shown, saved to a file, or written to the settings. It is kept in the computer's memory (`_G`) until the computer restarts, so it is gone after a reboot, a chunk unload or a server restart.
+- **Programs on the same computer can read it.** While the login is kept, any program running on that computer can read the token from `_G`, including code you just downloaded. Run `gitget logout` before running programs you don't trust, or on a computer other players use. Logging out forgets the token on the computer; it stays valid on GitHub until it expires, unless you revoke it (below).
 - **Limited access.** The token comes from a GitHub App with read-only access to repository contents. It expires after 8 hours even if someone copied it.
 - **Other GitGet users can't see your repositories.** A login acts as the person who approved it. Their token reaches only repositories that have the app installed *and* that they could already read on GitHub. So installing the app on your private repository doesn't let anyone else who logs in through GitGet see it.
 - **Installing the app means trusting its owner.** A GitHub App's owner can create a private key for the app and use it to read every repository the app is installed on, without anyone logging in. GitGet itself never does this, and the GitGet app has no use for a private key. If you don't want to trust the owner of the shared app, create your own app (see [Your own GitHub App](#your-own-github-app)) and use it with `--client-id`.

@@ -28,6 +28,8 @@ function F.new(opts)
     failWrite = nil,      -- path pattern whose writes raise "Out of space"
     program = "gitget.lua",
     epoch = 1700000000000,
+    memory = {},          -- the computer's _G, kept between runs until World:reboot
+    revoked = false,      -- true: GitHub answers 401 to the token
   }, World)
   return w
 end
@@ -243,6 +245,9 @@ function World:github(req)
 
   local path = url:match("^https://api%.github%.com(/.*)$")
   if path then
+    if auth and self.revoked then
+      return reply(401, J.encode({ message = "Bad credentials" }))
+    end
     if self.rateLimited and not authed then
       return reply(403, J.encode({ message = "API rate limit exceeded" }),
         { ["x-ratelimit-remaining"] = "0", ["x-ratelimit-reset"] = tostring(self.epoch / 1000 + 600) })
@@ -474,8 +479,13 @@ function World:env(args)
     setmetatable = setmetatable, getmetatable = getmetatable, unpack = unpack,
     rawget = rawget, rawset = rawset, rawequal = rawequal,
   }
-  env._G = env
+  -- A program's own globals go into its environment; _G is the computer's.
+  env._G = w.memory
   return env
+end
+
+function World:reboot()
+  self.memory = {}
 end
 
 -- Runs gitget with the given arguments. Returns the output and, when the

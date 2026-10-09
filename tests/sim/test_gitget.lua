@@ -279,6 +279,95 @@ test("still not found after login points at installing the app", function()
   contains(w:errorText(), "/installations/new")
 end)
 
+-- The login kept in memory ---------------------------------------------------
+
+local function loggedIn()
+  local w = F.new()
+  sampleRepo(w, { private = true })
+  w:deviceFlow({ "token" })
+  w.answers = { "y" }
+  noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  ok(w.files["sample/README.md"], "first download")
+  w.files, w.dirs, w.requests = {}, { [""] = true }, {}
+  return w
+end
+
+local function loginRequests(w)
+  local n = 0
+  for _, r in ipairs(w.requests) do
+    if r.url:find("^https://github%.com/login/") then n = n + 1 end
+  end
+  return n
+end
+
+test("a second private download uses the login from earlier", function()
+  local w = loggedIn()
+  local text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  ok(w.files["sample/README.md"], "downloaded")
+  contains(text, "Using your login from earlier")
+  notContains(text, "Log in to GitHub")
+  eq(loginRequests(w), 0, "no new login")
+  notContains(text, F.TOKEN, "the token is never shown")
+  for _, data in pairs(w.files) do notContains(data, F.TOKEN, "token in a file") end
+end)
+
+test("--login uses the login from earlier", function()
+  local w = loggedIn()
+  noBug(w:run("get", "someone/sample", "--login", "--client-id", F.CLIENT_ID))
+  ok(w.files["sample/README.md"], "downloaded")
+  eq(loginRequests(w), 0, "no new login")
+end)
+
+test("public downloads still carry no token after a login", function()
+  local w = loggedIn()
+  w:addRepo("someone/open", { files = { ["a.lua"] = "x" } })
+  noBug(w:run("get", "someone/open", "--client-id", F.CLIENT_ID))
+  eq(w.files["open/a.lua"], "x", "downloaded")
+  eq(#w:authed(), 0, "no Authorization")
+end)
+
+test("a restart, an expiring token, another app and logout each mean a new login", function()
+  local cases = {
+    restart = function(w) w:reboot() end,
+    expiry = function(w) w.epoch = w.epoch + (8 * 3600 - 299) * 1000 end,
+    app = function(w) w.memory.gitget_login.clientId = "other" end,
+    logout = function(w)
+      local text = noBug(w:run("logout"))
+      contains(text, "forgot your login")
+      eq(w.memory.gitget_login, nil, "forgotten")
+    end,
+  }
+  for name, change in pairs(cases) do
+    local w = loggedIn()
+    change(w)
+    w:deviceFlow({ "token" })
+    w.answers = { "y" }
+    local text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+    contains(text, "Log in to GitHub", name)
+    ok(w.files["sample/README.md"], name .. ": downloaded")
+  end
+end)
+
+test("a token that is about to expire in more than five minutes is still used", function()
+  local w = loggedIn()
+  w.epoch = w.epoch + (8 * 3600 - 301) * 1000
+  noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  eq(loginRequests(w), 0, "no new login")
+end)
+
+test("a login revoked on GitHub is forgotten and replaced", function()
+  local w = loggedIn()
+  w.revoked = true
+  w:deviceFlow({ "token" })
+  local fresh = w.device
+  w.device.script = setmetatable({}, { __index = function() w.revoked = false return "token" end })
+  local text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(text, "no longer accepts that login")
+  contains(text, "Logged in.")
+  ok(fresh.polls > 0, "logged in again")
+  ok(w.files["sample/README.md"], "downloaded")
+end)
+
 -- Disks, space and checked writes -------------------------------------------
 
 test("--disk with one drive downloads onto it", function()
