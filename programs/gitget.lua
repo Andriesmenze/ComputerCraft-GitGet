@@ -1,10 +1,11 @@
 -- GitGet: downloads a GitHub repository, or one folder or file of it, onto this
 -- computer or a floppy disk. Public repositories need nothing. Private ones use
--- a GitHub device login on every run: the token stays in memory and is never
--- stored.
+-- a GitHub device login. The token stays in the computer's memory until it
+-- restarts, so later downloads need no new login, and is never written to a file.
 --
 -- Usage:
 --   gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--force] [--client-id <id>]
+--   gitget logout
 --   gitget update
 --   gitget help
 --
@@ -27,12 +28,13 @@ local function usage()
   print("Usage:")
   print("  gitget get <owner>/<repo>[@ref][:path] [target]")
   print("      [--disk] [--login] [--force] [--client-id <id>]")
+  print("  gitget logout")
   print("  gitget update")
   print("")
   print("--disk   save to a floppy disk")
   print("--login  log in to GitHub first (private repos)")
   print("--force  overwrite without asking")
-  print("Example: gitget get Andriesmenze/ComputerCraft-NTP")
+  print("Example: gitget get octocat/Spoon-Knife")
 end
 
 -- An expected problem: main shows its message, without a stack trace.
@@ -152,8 +154,8 @@ end
 -- Device login
 ---------------------------------------------------------------------------
 
--- Logs in with GitHub's device flow and returns the access token. The token is
--- never printed or written anywhere.
+-- Logs in with GitHub's device flow and returns the access token and how many
+-- seconds it lasts. The token is never printed or written to a file.
 local function deviceLogin(clientId)
   if not clientId or clientId == "" then
     stop("This copy of GitGet has no GitHub App to log in with. Pass --client-id <id> (see the README).")
@@ -199,7 +201,9 @@ local function deviceLogin(clientId)
     local result = answer.status == 200 and decode(answer.body)
     if result and type(result.access_token) == "string" and result.access_token ~= "" then
       colourPrint(colours.lime, "Logged in.")
-      return result.access_token
+      local expiresIn = tonumber(result.expires_in)
+      if not expiresIn or expiresIn > 28800 then expiresIn = 28800 end
+      return result.access_token, expiresIn
     elseif result and result.error == "authorization_pending" then
       -- keep waiting
     elseif result and result.error == "slow_down" then
@@ -216,6 +220,34 @@ local function deviceLogin(clientId)
       stop("Login failed: " .. describe(answer))
     end
   end
+end
+
+-- A login is kept in _G, which every program on this computer shares until it
+-- shuts down or restarts. It is never written to a file. Keep it until five
+-- minutes before GitHub expires the token (8 hours for a GitHub App).
+local MEMORY = "gitget_login"
+local MARGIN = 300
+
+local function forget()
+  _G[MEMORY] = nil
+end
+
+local function remembered(clientId)
+  local saved = _G[MEMORY]
+  if type(saved) == "table" and saved.clientId == clientId and type(saved.token) == "string"
+    and type(saved.expires) == "number" and os.epoch("utc") < saved.expires then
+    print("Using your login from earlier (gitget logout forgets it).")
+    return saved.token
+  end
+  forget()
+  return nil
+end
+
+local function freshLogin(clientId)
+  local token, expiresIn = deviceLogin(clientId)
+  _G[MEMORY] = { clientId = clientId, token = token, expires = os.epoch("utc") + (expiresIn - MARGIN) * 1000 }
+  print("GitGet keeps this login until the computer restarts (gitget logout forgets it).")
+  return token
 end
 
 ---------------------------------------------------------------------------
@@ -502,15 +534,26 @@ local function get(args)
   local name = spec.owner .. "/" .. spec.repo
 
   local token
-  if login then token = deviceLogin(clientId) end
+  if login then token = remembered(clientId) or freshLogin(clientId) end
   print("Looking up " .. name .. "...")
   local info, res, step = fetchRepo(spec, token)
   if not info and step == "repo" and res.status == 404 and not token then
-    print("GitHub can't find " .. name .. ": it doesn't exist, or it is private.")
-    if not ask("Log in to GitHub and try again? (y/n)") then
-      stop("Nothing was downloaded.")
+    token = remembered(clientId)
+    if not token then
+      print("GitHub can't find " .. name .. ": it doesn't exist, or it is private.")
+      if not ask("Log in to GitHub and try again? (y/n)") then
+        stop("Nothing was downloaded.")
+      end
+      token = freshLogin(clientId)
     end
-    token = deviceLogin(clientId)
+    print("Looking up " .. name .. "...")
+    info, res, step = fetchRepo(spec, token)
+  end
+  if not info and step == "repo" and res.status == 401 and token then
+    -- the login was revoked on GitHub since
+    forget()
+    print("GitHub no longer accepts that login. Log in again.")
+    token = freshLogin(clientId)
     print("Looking up " .. name .. "...")
     info, res, step = fetchRepo(spec, token)
   end
@@ -620,6 +663,12 @@ end
 local function main(...)
   local args = { ... }
   local command = args[1]
+  if command == "logout" then
+    forget()
+    print("GitGet forgot your login on this computer. To revoke it on GitHub too, open")
+    print("https://github.com/settings/apps/authorizations")
+    return
+  end
   if command ~= "get" and command ~= "update" then
     usage()
     return
