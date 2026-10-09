@@ -33,9 +33,17 @@ for i, step in ipairs(cfg.steps) do
     note(a .. "\n")
     return a
   end
+  -- keep: a dummy login for that client ID in memory; forget: a restart
+  if step.keep then
+    _G.gitget_login = { clientId = step.keep, token = "gho_dummy", expires = os.epoch("utc") + 3600000 }
+  end
+  if step.forget then _G.gitget_login = nil end
   note("=== STEP " .. i .. "\n")
+  local started = os.epoch("utc")
   local ok, err = pcall(shell.execute, "/gitget.lua", table.unpack(step.args))
   if not ok then note("HARNESS ERROR: " .. tostring(err) .. "\n") end
+  note(string.format("=== TOOK %.0f ms\n", os.epoch("utc") - started))
+  note("=== SAVED " .. tostring(fs.exists("/.gitget_login")) .. "\n")
 end
 _G.read = realRead
 note("=== DONE\n")

@@ -2,6 +2,7 @@
 -- fakes.lua.
 local T = require("testlib")
 local F = require("fakes")
+local J = require("json")
 local test, eq, ok, contains, notContains = T.test, T.eq, T.ok, T.contains, T.notContains
 
 local BINARY = ""
@@ -366,6 +367,153 @@ test("a login revoked on GitHub is forgotten and replaced", function()
   contains(text, "Logged in.")
   ok(fresh.polls > 0, "logged in again")
   ok(w.files["sample/README.md"], "downloaded")
+end)
+
+-- The saved login --------------------------------------------------------------
+
+local PASS = "correct horse battery"
+
+local function saved()
+  local w = F.new()
+  sampleRepo(w, { private = true })
+  w:deviceFlow({ "token" })
+  w.answers = { "y", PASS, PASS }
+  local text = noBug(w:run("login", "--save", "--client-id", F.CLIENT_ID))
+  contains(text, "single-player world")
+  contains(text, "Saved to /.gitget_login for the next 7 hours")
+  ok(w.files[".gitget_login"], "saved")
+  w:reboot()
+  w.requests = {}
+  return w, text
+end
+
+local function savedData(w)
+  return J.decode(w.files[".gitget_login"])
+end
+
+test("login --save writes the login encrypted, never the token", function()
+  local w, text = saved()
+  notContains(text, F.TOKEN, "the token is never shown")
+  notContains(w.files[".gitget_login"], F.TOKEN, "token in the file")
+  notContains(w.files[".gitget_login"], PASS, "passphrase in the file")
+  local data = savedData(w)
+  eq(data.clientId, F.CLIENT_ID, "client ID")
+  eq(data.iterations, 2000, "iterations")
+  eq(data.expires, string.format("%.0f", 1700000000000 + (8 * 3600 - 300) * 1000), "expiry")
+  eq(#data.salt, 32, "salt")
+  for p in pairs(w.files) do notContains(p, "gitget-new", "no checked copy left") end
+end)
+
+test("after a restart the saved login is unlocked with the passphrase", function()
+  local w = saved()
+  w.answers = { PASS }
+  local text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(text, "Using your saved login")
+  notContains(text, "Log in to GitHub")
+  eq(loginRequests(w), 0, "no new login")
+  ok(w.files["sample/README.md"], "downloaded")
+  -- and it is kept in memory again, so the next download asks for nothing
+  w.requests, w.files["sample/README.md"] = {}, nil
+  noBug(w:run("get", "someone/sample", "--force", "--client-id", F.CLIENT_ID))
+  ok(w.files["sample/README.md"], "downloaded again")
+end)
+
+test("a wrong passphrase may be tried again; Enter skips to a new login", function()
+  local w = saved()
+  w.answers = { "wrong one", PASS }
+  local text = noBug(w:run("get", "someone/sample", "--login", "--client-id", F.CLIENT_ID))
+  contains(w:errorText(), "Wrong passphrase.")
+  contains(text, "Using your saved login")
+  eq(loginRequests(w), 0, "no new login")
+
+  w = saved()
+  w:deviceFlow({ "token" })
+  w.answers = { "", "y" }
+  text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(text, "Log in to GitHub")
+  ok(w.files["sample/README.md"], "downloaded")
+  ok(w.files[".gitget_login"], "the saved login stays")
+end)
+
+test("three wrong passphrases fall back to the login prompt", function()
+  local w = saved()
+  w.answers = { "a", "b", "c", "n" }
+  noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(w:errorText(), "Nothing was downloaded")
+end)
+
+test("a changed expiry in the file makes the passphrase fail", function()
+  local w = saved()
+  local data = savedData(w)
+  data.expires = string.format("%.0f", tonumber(data.expires) + 3600000)
+  w.files[".gitget_login"] = J.encode(data)
+  w.answers = { PASS, "", "n" }
+  noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(w:errorText(), "Wrong passphrase.")
+end)
+
+test("an expired saved login is deleted without asking", function()
+  local w = saved()
+  w.epoch = w.epoch + 8 * 3600 * 1000
+  w:deviceFlow({ "token" })
+  w.answers = { "y" }
+  local text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(text, "has expired, so GitGet deleted it")
+  eq(w.files[".gitget_login"], nil, "deleted")
+  ok(w.files["sample/README.md"], "downloaded")
+end)
+
+test("a saved login for another app is left alone", function()
+  local w = saved()
+  w:deviceFlow({ "token" })
+  w.device.script = { "token" }
+  w.answers = { "y" }
+  noBug(w:run("get", "someone/sample", "--client-id", "Iv1.other"))
+  ok(w.files[".gitget_login"], "kept")
+end)
+
+test("a saved login that GitHub rejects is deleted", function()
+  local w = saved()
+  w.revoked = true
+  w:deviceFlow({ "token" })
+  w.device.script = setmetatable({}, { __index = function() w.revoked = false return "token" end })
+  w.answers = { PASS }
+  local text = noBug(w:run("get", "someone/sample", "--client-id", F.CLIENT_ID))
+  contains(text, "no longer accepts that login")
+  eq(w.files[".gitget_login"], nil, "deleted")
+  ok(w.files["sample/README.md"], "downloaded")
+end)
+
+test("logout deletes the saved login", function()
+  local w = saved()
+  local text = noBug(w:run("logout"))
+  contains(text, "deleted the saved one")
+  eq(w.files[".gitget_login"], nil, "deleted")
+end)
+
+test("saving needs a yes, a long enough passphrase typed twice the same", function()
+  for name, answers in pairs({
+    declined = { "n" },
+    short = { "y", "short", "short" },
+    differ = { "y", PASS, PASS .. "!" },
+  }) do
+    local w = F.new()
+    w:deviceFlow({ "token" })
+    w.answers = answers
+    noBug(w:run("login", "--save", "--client-id", F.CLIENT_ID))
+    eq(w.files[".gitget_login"], nil, name .. ": nothing saved")
+    contains(w:errorText(), "Nothing was saved", name)
+    ok(w.memory.gitget_login, name .. ": still kept in memory")
+  end
+end)
+
+test("login --save reuses a kept login", function()
+  local w = loggedIn()
+  w.answers = { "y", PASS, PASS }
+  local text = noBug(w:run("login", "--save", "--client-id", F.CLIENT_ID))
+  contains(text, "You are logged in for the next 7 hours")
+  eq(loginRequests(w), 0, "no new login")
+  ok(w.files[".gitget_login"], "saved")
 end)
 
 -- Disks, space and checked writes -------------------------------------------

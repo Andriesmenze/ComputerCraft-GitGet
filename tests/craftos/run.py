@@ -8,6 +8,11 @@ The computer (live_startup.lua as its startup) runs these, anonymously:
                                                         (one folder of a big repo, onto a floppy)
   3. gitget get octocat/Hello-World:README              (a single file)
   4. gitget get octocat/no-such-repo-gitget-test        (not found; declines the login)
+  5. gitget login --save                                (a dummy login in memory, saved
+                                                        with a passphrase)
+  6. gitget get octocat/Hello-World:README --login      (after a restart: a wrong, then the
+                                                        right passphrase; GitHub rejects the
+                                                        dummy token, so the file is deleted)
 
 Each downloaded file's git blob SHA-1 is compared with the tree GitHub lists
 for the commit GitGet reported, read with `gh api` (so it doesn't use up
@@ -37,6 +42,8 @@ import time
 
 EXE = os.environ.get("CRAFTOS_PC", r"C:\Program Files\CraftOS-PC\CraftOS-PC_console.exe")
 HERE = os.path.dirname(os.path.abspath(__file__))
+DUMMY_APP = "Iv1.gitgetdummy"
+PASSPHRASE = "a long test passphrase"
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 WORK = os.path.join(tempfile.gettempdir(), "gitget-craftos")
 ROM_FUN = "projects/core/src/main/resources/data/computercraft/lua/rom/programs/fun"
@@ -48,6 +55,8 @@ def gh(path):
 
 
 def lua(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
     if isinstance(v, str):
         return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
     if isinstance(v, list):
@@ -91,6 +100,10 @@ def main():
         {"args": ["get", "cc-tweaked/CC-Tweaked@%s:%s" % (cc_branch, ROM_FUN), "fun", "--disk"]},
         {"args": ["get", "octocat/Hello-World:README"]},
         {"args": ["get", "octocat/no-such-repo-gitget-test"], "answers": ["n"]},
+        {"args": ["login", "--save", "--client-id", DUMMY_APP], "keep": DUMMY_APP,
+         "answers": ["y", PASSPHRASE, PASSPHRASE]},
+        {"args": ["get", "octocat/Hello-World:README", "hw", "--login", "--client-id", DUMMY_APP],
+         "forget": True, "answers": ["not the passphrase", PASSPHRASE]},
         ]
     shutil.rmtree(WORK, ignore_errors=True)
     c0 = os.path.join(WORK, "computer", "0")
@@ -116,6 +129,7 @@ def main():
         print("CraftOS-PC did not exit (timeout)")
     log = open(log_path, encoding="latin-1").read() if os.path.exists(log_path) else ""
     parts = re.split(r"^=== STEP \d+\n", log, flags=re.M)[1:]
+    took = [int(t) for t in re.findall(r"^=== TOOK (\d+) ms$", log, flags=re.M)]
     failures = []
 
     def check(cond, what):
@@ -168,6 +182,17 @@ def main():
     last = parts[3] if len(parts) > 3 else ""
     check("doesn't exist, or it is private" in last and "Nothing was downloaded" in last,
           "step 4: a missing repo offers the login and stops when declined")
+    save = parts[4] if len(parts) > 4 else ""
+    check("Saved to /.gitget_login" in save and "=== SAVED true" in save, "step 5: the login was saved")
+    unlock = parts[5] if len(parts) > 5 else ""
+    check("Wrong passphrase." in unlock and "Using your saved login" in unlock,
+          "step 6: a wrong passphrase fails, the right one unlocks the saved login")
+    check("no longer accepts that login" in unlock and "=== SAVED false" in unlock,
+          "step 6: GitHub rejects the dummy token, and the saved login is deleted")
+    if len(took) > 5:
+        # PBKDF2 does not yield: stay well under CC's 7 second limit, also in
+        # game (2 to 4 times slower than CraftOS-PC)
+        check(took[4] < 4000 and took[5] < 6000, "steps 5 and 6 took %d and %d ms" % (took[4], took[5]))
     print("%d failed" % len(failures))
     if failures:
         print("Log: " + log_path)

@@ -1,6 +1,6 @@
 # GitGet
 
-Downloads a GitHub repository, or one folder or file of it, onto a [CC: Tweaked](https://tweaked.cc) (ComputerCraft) computer or a floppy disk. Public repositories need nothing. Private ones use a GitHub device login: you approve a short code on your phone or PC, and no token or password is ever typed into the computer or saved to its disk.
+Downloads a GitHub repository, or one folder or file of it, onto a [CC: Tweaked](https://tweaked.cc) (ComputerCraft) computer or a floppy disk. Public repositories need nothing. Private ones use a GitHub device login: you approve a short code on your phone or PC, and your GitHub password is never typed into the computer.
 
 ## Installation
 
@@ -27,6 +27,7 @@ To update GitGet later, run `gitget update` (`wget` refuses to overwrite a file)
 
 ```
 gitget get <owner>/<repo>[@ref][:path] [target] [--disk] [--login] [--force] [--client-id <id>]
+gitget login [--save] [--client-id <id>]
 gitget logout
 gitget update
 gitget help
@@ -74,13 +75,26 @@ Log in to GitHub
 
 Open the page, type the code and approve. The download then starts by itself.
 
-GitGet keeps the login in the computer's memory until the computer shuts down or restarts, or the token is five minutes from expiring (it lasts 8 hours). Until then, private downloads on that computer need no new login. `gitget logout` forgets it sooner.
+GitGet keeps the login in the computer's memory until the computer shuts down or restarts, or the token is five minutes from expiring (it lasts 8 hours). Until then, private downloads on that computer need no new login. `gitget login` logs in ahead of time, and `gitget logout` forgets the login sooner.
+
+### Saving the login
+
+**Only do this on a single-player world or on a server whose operators you trust.**
+
+`gitget login --save` also saves the login to `/.gitget_login`, so it survives restarts until the token expires (8 hours at most). GitGet warns you and asks for a passphrase of at least 8 characters, twice. After a restart, the next private download asks for that passphrase instead of a new login (press Enter to log in instead). Three wrong passphrases also fall back to a new login.
+
+- The token is encrypted with xEncrypt (ChaCha20 and HMAC-SHA256, from [ComputerCraft-XEncrypt](https://github.com/Andriesmenze/ComputerCraft-XEncrypt), bundled in `gitget.lua`). The key comes from your passphrase through PBKDF2 with 2000 rounds and a random salt. The app's client ID and the expiry time are authenticated with it, so changing either one makes the file unusable.
+- **The passphrase is the only protection.** Whoever can copy the file can try passphrases on a fast PC, without limits and without you noticing. That includes the server's operators (the file is in the world save), anyone with access to the server's files, and every program on that computer. 2000 rounds is far below what real password storage uses, because CC's Lua is slow. Use a long passphrase that you use nowhere else.
+- A leaked file is useless after the token expires, and you can revoke the login sooner (see the security notes).
+- The file is deleted when it expires, when GitHub rejects the token, and by `gitget logout`.
+- Drawing the salt saves xEncrypt's random seed to `/.xEncrypt.seed`. The seed is not secret by itself, but leave it where it is.
 
 **Before your first login,** the GitGet GitHub App must be installed on the repositories you want it to read: open https://github.com/apps/gitget-for-computercraft/installations/new and choose the repositories. If it isn't installed on a repository, GitGet still can't find it after the login and shows that link.
 
 ### Security notes
 
-- **No token is stored on disk.** The token is never shown, saved to a file, or written to the settings. It is kept in the computer's memory (`_G`) until the computer restarts, so it is gone after a reboot, a chunk unload or a server restart.
+- **No token is stored on disk unless you save it.** The token is never shown or written to the settings. It is kept in the computer's memory (`_G`) until the computer restarts, so it is gone after a reboot, a chunk unload or a server restart. Only `gitget login --save` writes it to a file, encrypted (see [Saving the login](#saving-the-login)).
+- **Encrypting it in memory wouldn't help.** The key would have to be in memory next to it, where the same programs can read it.
 - **Programs on the same computer can read it.** While the login is kept, any program running on that computer can read the token from `_G`, including code you just downloaded. Run `gitget logout` before running programs you don't trust, or on a computer other players use. Logging out forgets the token on the computer; it stays valid on GitHub until it expires, unless you revoke it (below).
 - **Limited access.** The token comes from a GitHub App with read-only access to repository contents. It expires after 8 hours even if someone copied it.
 - **Other GitGet users can't see your repositories.** A login acts as the person who approved it. Their token reaches only repositories that have the app installed *and* that they could already read on GitHub. So installing the app on your private repository doesn't let anyone else who logs in through GitGet see it.
@@ -126,6 +140,7 @@ Without logging in, GitHub allows 60 API requests an hour per IP address. That I
 | `programs/gitget.lua` | The whole program, the only file a computer needs |
 | `tests/sim/` | Simulator suite: a small CC: Tweaked model with a fake GitHub (`fakes.lua`), the scenarios (`test_gitget.lua`), and static checks on the source (`test_sources.lua`) |
 | `tests/craftos/` | Live suite: GitGet on CraftOS-PC against the real GitHub |
+| `tests/sync_xencrypt.py` | Copies XEncrypt's `apis/xEncrypt.lua` into the bundled copy in `gitget.lua` |
 
 ## Running the tests
 
@@ -136,7 +151,13 @@ pip install lupa
 python tests/sim/run.py
 ```
 
-The live suite runs GitGet on [CraftOS-PC](https://www.craftos-pc.cc) against the real GitHub. It downloads a whole public repository, one folder of CC: Tweaked onto a floppy, and a single file, then compares every file with GitHub's own blob IDs. It needs CraftOS-PC, the GitHub CLI (`gh`, logged in) and internet access:
+`gitget.lua` holds an unchanged copy of XEncrypt's `apis/xEncrypt.lua` between the lines `-- xEncrypt.lua begins` and `-- xEncrypt.lua ends`. The simulator suite compares it with `../XEncrypt` when that is checked out next to GitGet (CI skips this check). After a change to xEncrypt, copy it in with:
+
+```
+python tests/sync_xencrypt.py
+```
+
+The live suite runs GitGet on [CraftOS-PC](https://www.craftos-pc.cc) against the real GitHub. It downloads a whole public repository, one folder of CC: Tweaked onto a floppy, and a single file, then compares every file with GitHub's own blob IDs. It also saves a dummy login with `gitget login --save`, then unlocks it after a simulated restart (a wrong passphrase first). GitHub rejects the dummy token, so the file must be deleted, and it times the passphrase steps. It needs CraftOS-PC, the GitHub CLI (`gh`, logged in) and internet access:
 
 ```
 python tests/craftos/run.py
