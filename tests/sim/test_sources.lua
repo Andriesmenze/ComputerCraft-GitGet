@@ -134,6 +134,42 @@ for _, rel in ipairs(IN_GAME) do
   end)
 end
 
+-- programs/gitget.lua bundles XEncrypt's apis/xEncrypt.lua unchanged
+-- (tests/sync_xencrypt.py copies it in).
+local BEGIN, END = "-- xEncrypt.lua begins\n", "-- xEncrypt.lua ends\n"
+
+local function bundled()
+  local src = assert(readRepo("programs/gitget.lua"))
+  local _, s = src:find(BEGIN, 1, true)
+  local e = src:find(END, s, true)
+  ok(s and e, "markers")
+  return src:sub(s + 1, e - 1), src:sub(1, s)
+end
+
+test("the bundled xEncrypt is the same as ../XEncrypt", function()
+  local f = io.open(REPO .. "/../XEncrypt/apis/xEncrypt.lua", "rb")
+  if not f then
+    print("      skipped: ../XEncrypt is not checked out")
+    return
+  end
+  local lib = f:read("*a")
+  f:close()
+  if lib:sub(-1) ~= "\n" then lib = lib .. "\n" end
+  ok(bundled() == lib, "programs/gitget.lua has another xEncrypt.lua: run python tests/sync_xencrypt.py")
+end)
+
+test("every global function of the bundled xEncrypt is made local", function()
+  local lib, before = bundled()
+  local decl = before:match("\n(  local xEncrypt_VERSION[^\n]*\n.-)%-%- xEncrypt%.lua begins")
+  ok(decl, "local line")
+  for name in lib:gmatch("\nfunction ([%w_]+)%(") do
+    ok(decl:find("%f[%w_]" .. name .. "%f[^%w_]"), name .. " is not declared local")
+  end
+  for name in lib:gmatch("\n([%w_]+)%s*=") do
+    ok(decl:find("%f[%w_]" .. name .. "%f[^%w_]"), name .. " is not declared local")
+  end
+end)
+
 test("the source checks find what they look for and ignore strings and comments", function()
   ok(codeOnly("local a = 1 // 2"):find("//"), "floor division")
   ok(not codeOnly('local s = "a // b" -- x & y'):find("[/&]"), "string and comment")

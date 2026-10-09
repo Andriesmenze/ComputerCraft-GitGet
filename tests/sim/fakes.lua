@@ -382,6 +382,22 @@ end
 -- Environment
 ---------------------------------------------------------------------------
 
+-- CC:Tweaked's bit32 on LuaJIT's bit, whose results are signed (from XEncrypt's
+-- tests/cc_env.lua).
+local MOD32 = 4294967296
+local function u32(x) return x % MOD32 end
+BIT32 = {
+  band = function(...) return u32(bit.band(...)) end,
+  bor = function(...) return u32(bit.bor(...)) end,
+  bxor = function(...) return u32(bit.bxor(...)) end,
+  bnot = function(x) return u32(bit.bnot(x)) end,
+  lshift = function(x, d) if d >= 32 then return 0 end return u32(bit.lshift(x, d)) end,
+  rshift = function(x, d) if d >= 32 then return 0 end return u32(bit.rshift(x, d)) end,
+  lrotate = function(x, d) return u32(bit.rol(x, d)) end,
+  rrotate = function(x, d) return u32(bit.ror(x, d)) end,
+}
+BIT32.btest = function(...) return BIT32.band(...) ~= 0 end
+
 function World:makeHttp()
   local w = self
   local function handle(res)
@@ -447,11 +463,13 @@ function World:env(args)
     colours = { white = 1, yellow = 16, lightBlue = 8, lime = 32 },
     fs = self:makeFs(),
     http = not self.httpOff and self:makeHttp() or nil,
-    textutils = { unserialiseJSON = J.decode, unserializeJSON = J.decode },
+    textutils = { unserialiseJSON = J.decode, unserializeJSON = J.decode, serialiseJSON = J.encode },
     os = {
       sleep = function(n) w.sleeps[#w.sleeps + 1] = n end,
       epoch = function() return w.epoch end,
+      clock = os.clock,
     },
+    bit32 = BIT32,
     peripheral = {
       getNames = function()
         local names = {}
