@@ -201,6 +201,10 @@ test("--skip leaves out more names, folders and paths", function()
   sampleRepo(w)
   noBug(w:run("get", "someone/sample", "--skip"))
   contains(w:errorText(), "--skip needs names")
+  w.errors = {}
+  noBug(w:run("get", "someone/sample", "--skip", "--all"))
+  contains(w:errorText(), "--skip needs names")
+  ok(not w.files["sample/README.md"], "nothing downloaded")
 end)
 
 test("a download that leaves out every file says how to get them", function()
@@ -592,6 +596,25 @@ test("a new login says how to save it", function()
   w:deviceFlow({ "token" })
   local text = noBug(w:run("login", "--client-id", F.CLIENT_ID))
   contains(text, "gitget login --save")
+end)
+
+test("get --save saves the new login when GitHub rejected the kept one", function()
+  local w = loggedIn()
+  w.revoked = true
+  w:deviceFlow({ "token" })
+  w.device.script = setmetatable({}, { __index = function() w.revoked = false return "token" end })
+  w.answers = { "y", PASS, PASS }
+  local text = noBug(w:run("get", "someone/sample", "--save", "--client-id", F.CLIENT_ID))
+  contains(text, "no longer accepts that login")
+  contains(text, "Saved to /.gitget_login")
+  ok(w.files[".gitget_login"], "the new login is saved")
+  ok(w.files["sample/README.md"], "downloaded")
+  w:reboot()
+  w.answers = { PASS }
+  w.files["sample/README.md"] = nil
+  text = noBug(w:run("get", "someone/sample", "--force", "--client-id", F.CLIENT_ID))
+  contains(text, "Using your saved login")
+  notContains(text, "no longer accepts", "the saved token is the new one")
 end)
 
 test("get --save logs in, saves the login, then downloads", function()

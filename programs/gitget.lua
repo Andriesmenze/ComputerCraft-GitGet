@@ -691,7 +691,7 @@ local function get(args)
     elseif a == "--all" then all = true
     elseif a == "--skip" then
       i = i + 1
-      if not args[i] or args[i]:gsub("[%s,/]", "") == "" then stop("--skip needs names, such as --skip docs,*.md") end
+      if not args[i] or args[i]:sub(1, 2) == "--" or args[i]:gsub("[%s,/]", "") == "" then stop("--skip needs names, such as --skip docs,*.md") end
       for name in args[i]:gmatch("[^,]+") do skipNames[#skipNames + 1] = name:match("^%s*(.-)%s*$") end
     elseif a == "--client-id" then
       i = i + 1
@@ -720,7 +720,6 @@ local function get(args)
 
   local token
   if login then token = remembered(clientId) or freshLogin(clientId) end
-  if save then saveLogin(clientId) end
   print("Looking up " .. name .. "...")
   local info, res, step = fetchRepo(spec, token)
   if not info and step == "repo" and res.status == 404 and not token then
@@ -743,6 +742,8 @@ local function get(args)
     print("Looking up " .. name .. "...")
     info, res, step = fetchRepo(spec, token)
   end
+  -- Saved only now that GitHub has accepted the login (or replaced a revoked one).
+  if save and not (step == "repo" and res.status == 401) then saveLogin(clientId) end
   if not info then
     if step == "repo" and res.status == 404 then
       stop("GitHub still can't find " .. name .. ". Check the name, and that the GitGet app is installed on it: " .. APP_URL .. "/installations/new")
